@@ -30,6 +30,9 @@
           inherit system;
         };
         rust_deps = with pkgs; [
+          pkg-config
+          cmake
+          fontconfig
           fenix.packages.${system}.latest.toolchain
           #(fenix.packages.x86_64-linux.fromManifestFile rust-manifest).toolchain
           cargo-nextest

@@ -13,7 +13,7 @@ fn random_bytes_32(rng: &mut impl Rng) -> Bytes32 {
 
 #[skip_serializing_none]
 #[serde_as]
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CoinConfig {
     /// auto-generated if None
     #[serde_as(as = "Option<HexType>")]
@@ -77,9 +77,6 @@ pub struct ContractConfig {
     #[serde_as(as = "Option<HexType>")]
     #[serde(default)]
     pub tx_id: Option<Bytes32>,
-    /// UtxoId: auto-generated if None
-    #[serde_as(as = "Option<HexNumber>")]
-    #[serde(default)]
     pub output_index: Option<u8>,
     /// TxPointer: auto-generated if None
     /// used if contract is forked from another chain to preserve id & tx_pointer
@@ -90,8 +87,6 @@ pub struct ContractConfig {
     /// TxPointer: auto-generated if None
     /// used if contract is forked from another chain to preserve id & tx_pointer
     /// The index of the originating tx within `tx_pointer_block_height`
-    #[serde_as(as = "Option<HexNumber>")]
-    #[serde(default)]
     pub tx_pointer_tx_idx: Option<u16>,
 }
 
@@ -110,9 +105,9 @@ impl ContractConfig {
             state: Some(vec![(random_bytes_32(rng), random_bytes_32(rng))]),
             balances: Some(balances),
             tx_id: Some(random_bytes_32(rng)),
-            output_index: rng.gen(),
+            output_index: Some(rng.gen()),
             tx_pointer_block_height: Some(BlockHeight::from(rng.gen::<u32>())),
-            tx_pointer_tx_idx: rng.gen(),
+            tx_pointer_tx_idx: Some(rng.gen()),
         }
     }
 }
@@ -148,7 +143,7 @@ impl MessageConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum StateEntry {
     Coin(CoinConfig),
     Contract(ContractConfig),
