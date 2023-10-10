@@ -5,12 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
 use itertools::Itertools;
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
 
 use crate::{
-    encoding::{decode_bincode, decode_json, encode_bincode, encode_json},
+    encoding::{
+        decode_bincode, decode_bson, decode_json, encode_bincode, encode_bson, encode_json,
+    },
     serde_types::StateEntry,
     util::payload,
 };
@@ -107,7 +109,7 @@ impl LinearRegression for &[EncodeMeasurement] {
             regress(|m| m.decode_time.as_secs_f64()),
         ];
 
-        (start..end)
+        (start..=end)
             .step_by(step)
             .map(|num_elements| EncodeMeasurement {
                 num_elements,
@@ -159,6 +161,23 @@ pub fn measure_json_normal(
     }
 }
 
+pub fn measure_bson_normal(
+    mut buffer: &mut Vec<u8>,
+    entries: Vec<StateEntry>,
+) -> EncodeMeasurement {
+    let num_elements = entries.len();
+    buffer.clear();
+    let encode_time = track_time(|| encode_bson(entries, &mut buffer));
+    let bytes = buffer.len();
+    let decode_time = decode_normal(buffer, |buf| decode_bson(buf));
+    EncodeMeasurement {
+        bytes,
+        encode_time,
+        decode_time,
+        num_elements,
+    }
+}
+
 pub fn measure_bincode_normal(
     mut buffer: &mut Vec<u8>,
     entries: Vec<StateEntry>,
@@ -185,6 +204,24 @@ pub fn measure_json_compressed(
     let encode_time = encode_compressed(buffer, |compressor| encode_json(entries, compressor));
     let bytes = buffer.len();
     let decode_time = decode_compressed(buffer, |reader| decode_json(reader));
+
+    EncodeMeasurement {
+        bytes,
+        encode_time,
+        decode_time,
+        num_elements,
+    }
+}
+
+pub fn measure_bson_compressed(
+    buffer: &mut Vec<u8>,
+    entries: Vec<StateEntry>,
+) -> EncodeMeasurement {
+    let num_elements = entries.len();
+    buffer.clear();
+    let encode_time = encode_compressed(buffer, |compressor| encode_bson(entries, compressor));
+    let bytes = buffer.len();
+    let decode_time = decode_compressed(buffer, |reader| decode_bson(reader));
 
     EncodeMeasurement {
         bytes,
@@ -272,17 +309,17 @@ fn decode_normal(payload: &[u8], decoder: fn(&mut BufReader<&[u8]>)) -> Duration
     track_time(move || decoder(&mut reader))
 }
 
-fn decode_compressed(data: &[u8], decoder: fn(&mut BufReader<GzDecoder<&[u8]>>)) -> Duration {
-    let mut reader = BufReader::new(GzDecoder::new(data));
+fn decode_compressed(data: &[u8], decoder: fn(&mut BufReader<ZlibDecoder<&[u8]>>)) -> Duration {
+    let mut reader = BufReader::new(ZlibDecoder::new(data));
 
     track_time(move || decoder(&mut reader))
 }
 
 fn encode_compressed(
     buf: &mut Vec<u8>,
-    encoder: impl FnOnce(&mut GzEncoder<&mut Vec<u8>>),
+    encoder: impl FnOnce(&mut ZlibEncoder<&mut Vec<u8>>),
 ) -> Duration {
-    let mut compressor = GzEncoder::new(buf, Compression::new(3));
+    let mut compressor = ZlibEncoder::new(buf, Compression::new(1));
     track_time(move || {
         encoder(&mut compressor);
         compressor.finish().unwrap();
@@ -297,7 +334,7 @@ fn generate_json_uncompressed(payload: impl Iterator<Item = StateEntry>, path: i
 
 fn generate_json_compressed(payload: impl Iterator<Item = StateEntry>, path: impl AsRef<Path>) {
     let file = File::create(path.as_ref()).unwrap();
-    let mut compressor = GzEncoder::new(file, Compression::default());
+    let mut compressor = ZlibEncoder::new(file, Compression::default());
     encode_json(payload, &mut compressor);
     compressor.finish().unwrap();
 }
@@ -324,7 +361,7 @@ fn seek_end_compressed(payload: impl IntoIterator<Item = StateEntry>) -> std::ti
 
     let start = Instant::now();
     let file = File::open(tmp.path()).unwrap();
-    let mut decoder = GzDecoder::new(file);
+    let mut decoder = ZlibDecoder::new(file);
 
     std::io::copy(
         &mut std::io::Read::by_ref(&mut decoder),

@@ -9,7 +9,7 @@ edition = "2021"
 anyhow = "1.0.75"
 bincode = { version = "2.0.0-rc.3", features = ["serde"] }
 bson = "2.7.0"
-flate2 = "1.0.27"
+flate2 = { version = "1.0.27", features = ["zlib-ng"] }
 fuel-chain-config = "0.15.3"
 fuel-core-types = "0.20.5"
 fuel-types = "0.38.0"

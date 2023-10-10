@@ -5,13 +5,10 @@ use fuel_core_types::{blockchain::primitives::DaBlockHeight, fuel_types::bytes::
 use fuel_types::{Address, AssetId, BlockHeight, Bytes32, ContractId, Nonce, Salt, Word};
 use rand::Rng;
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
-use serde_with::{serde_as, skip_serializing_none, DeserializeAs, SerializeAs};
+use serde_with::{serde_as, DeserializeAs, SerializeAs};
 
-fn random_bytes_32(rng: &mut impl Rng) -> Bytes32 {
-    Bytes32::from(rng.gen::<[u8; 32]>())
-}
+use crate::util::random_bytes_32;
 
-#[skip_serializing_none]
 #[serde_as]
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct CoinConfig {
@@ -57,7 +54,6 @@ impl CoinConfig {
     }
 }
 
-#[skip_serializing_none]
 #[serde_as]
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ContractConfig {
@@ -67,12 +63,6 @@ pub struct ContractConfig {
     pub code: Vec<u8>,
     #[serde_as(as = "HexType")]
     pub salt: Salt,
-    #[serde_as(as = "Option<Vec<(HexType, HexType)>>")]
-    #[serde(default)]
-    pub state: Option<Vec<(Bytes32, Bytes32)>>,
-    #[serde_as(as = "Option<Vec<(HexType, HexNumber)>>")]
-    #[serde(default)]
-    pub balances: Option<Vec<(AssetId, u64)>>,
     /// UtxoId: auto-generated if None
     #[serde_as(as = "Option<HexType>")]
     #[serde(default)]
@@ -90,20 +80,30 @@ pub struct ContractConfig {
     pub tx_pointer_tx_idx: Option<u16>,
 }
 
+#[serde_as]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct ContractState {
+    #[serde_as(as = "HexType")]
+    pub key: Bytes32,
+    #[serde_as(as = "HexType")]
+    pub value: Bytes32,
+}
+
+#[serde_as]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+pub struct ContractBalance {
+    #[serde_as(as = "HexType")]
+    pub asset_id: AssetId,
+    #[serde_as(as = "HexNumber")]
+    pub amount: u64,
+}
+
 impl ContractConfig {
     pub fn random(rng: &mut impl Rng) -> Self {
-        let balances = std::iter::repeat_with(|| {
-            let asset_id = AssetId::new(*random_bytes_32(rng));
-            (asset_id, rng.gen())
-        })
-        .take(10)
-        .collect::<Vec<_>>();
         ContractConfig {
             contract_id: ContractId::new(*random_bytes_32(rng)),
             code: (*random_bytes_32(rng)).to_vec(),
             salt: Salt::new(*random_bytes_32(rng)),
-            state: Some(vec![(random_bytes_32(rng), random_bytes_32(rng))]),
-            balances: Some(balances),
             tx_id: Some(random_bytes_32(rng)),
             output_index: Some(rng.gen()),
             tx_pointer_block_height: Some(BlockHeight::from(rng.gen::<u32>())),
@@ -146,8 +146,10 @@ impl MessageConfig {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum StateEntry {
     Coin(CoinConfig),
-    Contract(ContractConfig),
     Message(MessageConfig),
+    Contract(ContractConfig),
+    ContractState(ContractState),
+    ContractBalance(ContractBalance),
 }
 
 // ------------ Other stuff --------------

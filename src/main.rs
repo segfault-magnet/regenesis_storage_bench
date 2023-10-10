@@ -3,20 +3,20 @@ pub mod measurements;
 pub mod serde_types;
 pub mod util;
 
-use std::{cmp::max, path::Path};
+use std::{iter::zip, path::Path};
 
-use itertools::{chain, Itertools};
+use itertools::Itertools;
 use measurements::{
-    measure_bincode_compressed, measure_bincode_normal, measure_json_compressed,
-    measure_json_normal, measure_json_seek, CollectToCsv, EncodeMeasurement, LinearRegression,
-    MeasurementRunner,
+    measure_bincode_compressed, measure_bincode_normal, measure_bson_compressed,
+    measure_bson_normal, measure_json_compressed, measure_json_normal, measure_json_seek,
+    EncodeMeasurement, LinearRegression, MeasurementRunner,
 };
 use plotters::{
     prelude::{ChartBuilder, Circle, IntoDrawingArea, PathElement, SVGBackend},
     series::{LineSeries, PointSeries},
-    style::{Color, IntoFont, RGBColor, BLUE, WHITE},
+    style::{Color, IntoFont, RGBColor, WHITE},
 };
-use serde::de;
+use rand::Rng;
 
 #[derive(Debug, Copy, Clone)]
 enum Shape {
@@ -33,9 +33,14 @@ struct PlotSettings {
 
 impl PlotSettings {
     pub fn normal(label: &str) -> Self {
+        let mut rng = rand::thread_rng();
         Self {
             label: label.to_string(),
-            color: (rand::random(), rand::random(), rand::random()),
+            color: (
+                rng.gen_range(0..65),
+                rng.gen_range(0..65),
+                rng.gen_range(0..65),
+            ),
             shape: Shape::Circle,
         }
     }
@@ -50,15 +55,16 @@ impl PlotSettings {
 
 fn draw_measurements(
     title: &str,
+    x_desc: &str,
     y_desc: &str,
-    measurement_sets: Vec<(Vec<(usize, f64)>, PlotSettings)>,
+    measurement_sets: Vec<(Vec<(f64, f64)>, PlotSettings)>,
     path: impl AsRef<Path>,
 ) -> anyhow::Result<()> {
     let max_x = measurement_sets
         .iter()
         .flat_map(|m| &m.0)
         .map(|m| m.0)
-        .max()
+        .max_by(|a, b| a.total_cmp(b))
         .unwrap();
 
     let max_y = measurement_sets
@@ -76,11 +82,11 @@ fn draw_measurements(
         .y_label_area_size(70)
         .margin(5)
         .caption(title, ("sans-serif", 50.0).into_font())
-        .build_cartesian_2d(0usize..max_x, 0f64..max_y)?;
+        .build_cartesian_2d(0f64..max_x, 0f64..max_y)?;
 
     chart
         .configure_mesh()
-        .x_desc("# Elements")
+        .x_desc(x_desc)
         .y_desc(y_desc)
         .x_labels(50)
         .y_labels(50)
@@ -116,33 +122,68 @@ fn draw_measurements(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+enum Scale {
+    #[default]
+    M,
+    G,
+    T,
+}
+
+impl Scale {
+    pub fn divider(&self) -> f64 {
+        match self {
+            Scale::M => 1_000_000f64,
+            Scale::G => 1_000_000_000f64,
+            Scale::T => 1_000_000_000_000f64,
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Scale::M => "M",
+            Scale::G => "G",
+            Scale::T => "T",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct PlotMerger {
-    bytes: Vec<(Vec<(usize, f64)>, PlotSettings)>,
-    encode_time: Vec<(Vec<(usize, f64)>, PlotSettings)>,
-    decode_time: Vec<(Vec<(usize, f64)>, PlotSettings)>,
+    storage_scale: Scale,
+    x_scale: Scale,
+    bytes: Vec<(Vec<(f64, f64)>, PlotSettings)>,
+    encode_time: Vec<(Vec<(f64, f64)>, PlotSettings)>,
+    decode_time: Vec<(Vec<(f64, f64)>, PlotSettings)>,
 }
 
 impl PlotMerger {
+    pub fn new(storage_scale: Scale, x_scale: Scale) -> Self {
+        Self {
+            storage_scale,
+            x_scale,
+            ..Default::default()
+        }
+    }
+
     pub fn add(&mut self, settings: PlotSettings, measurement: &[EncodeMeasurement]) -> &mut Self {
-        let data = measurement
+        let x_axis = measurement
             .iter()
-            .map(|m| (m.num_elements, m.bytes as f64 / 1_000_000f64))
-            .collect();
+            .map(|m| m.num_elements as f64 / self.x_scale.divider())
+            .collect_vec();
 
-        self.bytes.push((data, settings.clone()));
-
-        let data = measurement
+        let bytes = measurement
             .iter()
-            .map(|m| (m.num_elements, m.encode_time.as_secs_f64()))
-            .collect();
-        self.encode_time.push((data, settings.clone()));
+            .map(|m| m.bytes as f64 / self.storage_scale.divider());
+        self.bytes
+            .push((zip(x_axis.clone(), bytes).collect(), settings.clone()));
 
-        let data = measurement
-            .iter()
-            .map(|m| (m.num_elements, m.decode_time.as_secs_f64()))
-            .collect();
-        self.decode_time.push((data, settings));
+        let encode_time = measurement.iter().map(|m| m.encode_time.as_secs_f64());
+        self.encode_time
+            .push((zip(x_axis.clone(), encode_time).collect(), settings.clone()));
+
+        let decode_time = measurement.iter().map(|m| m.decode_time.as_secs_f64());
+        self.decode_time
+            .push((zip(x_axis, decode_time).collect(), settings.clone()));
 
         self
     }
@@ -153,19 +194,22 @@ impl PlotMerger {
 
         draw_measurements(
             "storage requirements",
-            "MBs",
+            &format!("{} elements", self.x_scale.label()),
+            &format!("{}Bs", self.storage_scale.label()),
             self.bytes,
             dir.join("storage_requirements.svg"),
         )?;
 
         draw_measurements(
             "encoding time",
+            &format!("{} elements", self.x_scale.label()),
             "s",
             self.encode_time,
             dir.join("encoding_time.svg"),
         )?;
         draw_measurements(
             "decoding time",
+            &format!("{} elements", self.x_scale.label()),
             "s",
             self.decode_time,
             dir.join("decoding_time.svg"),
@@ -177,21 +221,34 @@ impl PlotMerger {
 
 fn main() -> anyhow::Result<()> {
     let mut measurement_runner = MeasurementRunner::new(100_000, 10_000);
+    let prediction_storage_scale = Scale::G;
+    let prediction_x_scale = Scale::M;
+
+    let prediction_max = 1_000_000_000usize;
+    let prediction_step = prediction_max;
+    let prediction_start = 0usize;
 
     let normal_json = measurement_runner.run(measure_json_normal);
+    let normal_bson = measurement_runner.run(measure_bson_normal);
     let normal_bincode = measurement_runner.run(measure_bincode_normal);
-    let mut merger = PlotMerger::default();
+    let mut merger = PlotMerger::new(Scale::M, Scale::M);
     merger.add(PlotSettings::normal("serde_json"), &normal_json);
     merger.add(PlotSettings::normal("bincode"), &normal_bincode);
+    merger.add(PlotSettings::normal("bson"), &normal_bson);
     merger.plot("normal")?;
 
-    let normal_json_predicted = normal_json.linear_regression(0, 1_000, 100_000_000);
-    let normal_bincode_predicted = normal_bincode.linear_regression(0, 1_000, 100_000_000);
-    let mut merger = PlotMerger::default();
+    let normal_json_predicted =
+        normal_json.linear_regression(prediction_start, prediction_step, prediction_max);
+    let normal_bson_predicted =
+        normal_bson.linear_regression(prediction_start, prediction_step, prediction_max);
+    let normal_bincode_predicted =
+        normal_bincode.linear_regression(prediction_start, prediction_step, prediction_max);
+    let mut merger = PlotMerger::new(prediction_storage_scale, prediction_x_scale);
     merger.add(
         PlotSettings::predicted("serde_json"),
         &normal_json_predicted,
     );
+    merger.add(PlotSettings::predicted("bson"), &normal_bson_predicted);
     merger.add(
         PlotSettings::predicted("bincode"),
         &normal_bincode_predicted,
@@ -199,18 +256,28 @@ fn main() -> anyhow::Result<()> {
     merger.plot("normal_predicted")?;
 
     let json_compressed = measurement_runner.run(measure_json_compressed);
+    let bson_compressed = measurement_runner.run(measure_bson_compressed);
     let bincode_compressed = measurement_runner.run(measure_bincode_compressed);
     let mut merger = PlotMerger::default();
     merger.add(PlotSettings::normal("serde_json"), &json_compressed);
+    merger.add(PlotSettings::normal("bson"), &bson_compressed);
     merger.add(PlotSettings::normal("bincode"), &bincode_compressed);
     merger.plot("compressed")?;
 
-    let json_compressed_predicted = json_compressed.linear_regression(0, 10_000, 100_000_000);
-    let bincode_compressed_predicted = bincode_compressed.linear_regression(0, 10_000, 100_000_000);
-    let mut merger = PlotMerger::default();
+    let json_compressed_predicted =
+        json_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
+    let bson_compressed_predicted =
+        bson_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
+    let bincode_compressed_predicted =
+        bincode_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
+    let mut merger = PlotMerger::new(prediction_storage_scale, prediction_x_scale);
     merger.add(
         PlotSettings::predicted("serde_json_compressed"),
         &json_compressed_predicted,
+    );
+    merger.add(
+        PlotSettings::predicted("bson_compressed"),
+        &bson_compressed_predicted,
     );
     merger.add(
         PlotSettings::predicted("bincode_compressed"),
@@ -220,6 +287,7 @@ fn main() -> anyhow::Result<()> {
         PlotSettings::predicted("serde_json"),
         &normal_json_predicted,
     );
+    merger.add(PlotSettings::predicted("bson"), &normal_bson_predicted);
     merger.add(
         PlotSettings::predicted("bincode"),
         &normal_bincode_predicted,
