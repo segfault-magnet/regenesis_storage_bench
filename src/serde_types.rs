@@ -1,8 +1,14 @@
 use core::fmt;
-use std::convert::TryFrom;
+use std::{convert::TryFrom, io::Write, sync::Arc};
 
 use fuel_core_types::{blockchain::primitives::DaBlockHeight, fuel_types::bytes::WORD_SIZE};
 use fuel_types::{Address, AssetId, BlockHeight, Bytes32, ContractId, Nonce, Salt, Word};
+use parquet::{
+    basic::{LogicalType, Repetition},
+    data_type::{ByteArray, ByteArrayType, FixedLenByteArrayType, Int32Type},
+    file::writer::SerializedFileWriter,
+    schema::types::Type,
+};
 use rand::Rng;
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{serde_as, DeserializeAs, SerializeAs};
@@ -10,7 +16,7 @@ use serde_with::{serde_as, DeserializeAs, SerializeAs};
 use crate::util::random_bytes_32;
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CoinConfig {
     /// auto-generated if None
     #[serde_as(as = "Option<HexType>")]
@@ -78,6 +84,145 @@ pub struct ContractConfig {
     /// used if contract is forked from another chain to preserve id & tx_pointer
     /// The index of the originating tx within `tx_pointer_block_height`
     pub tx_pointer_tx_idx: Option<u16>,
+}
+
+trait ParquetTrait {
+    fn schema() -> Type;
+    fn write<T: Write + Send>(self, writer: &mut SerializedFileWriter<T>);
+}
+
+impl ParquetTrait for ContractConfig {
+    fn schema() -> Type {
+        use parquet::basic::Type as PhysicalType;
+        let contract_id =
+            Type::primitive_type_builder("contract_id", PhysicalType::FIXED_LEN_BYTE_ARRAY)
+                .with_length(32)
+                .with_repetition(Repetition::REQUIRED)
+                .build()
+                .unwrap();
+        let code = Type::primitive_type_builder("code", PhysicalType::BYTE_ARRAY)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .unwrap();
+
+        let salt = Type::primitive_type_builder("salt", PhysicalType::FIXED_LEN_BYTE_ARRAY)
+            .with_length(32)
+            .with_repetition(Repetition::REQUIRED)
+            .build()
+            .unwrap();
+
+        let tx_id = Type::primitive_type_builder("tx_id", PhysicalType::FIXED_LEN_BYTE_ARRAY)
+            .with_length(32)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .unwrap();
+
+        let output_index = Type::primitive_type_builder("output_index", PhysicalType::INT32)
+            .with_converted_type(parquet::basic::ConvertedType::UINT_8)
+            .with_repetition(Repetition::OPTIONAL)
+            .build()
+            .unwrap();
+
+        let tx_pointer_block_height =
+            Type::primitive_type_builder("tx_pointer_block_height", PhysicalType::INT32)
+                .with_converted_type(parquet::basic::ConvertedType::UINT_32)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .unwrap();
+
+        let tx_pointer_tx_idx =
+            Type::primitive_type_builder("tx_pointer_tx_idx", PhysicalType::INT32)
+                .with_converted_type(parquet::basic::ConvertedType::UINT_16)
+                .with_repetition(Repetition::OPTIONAL)
+                .build()
+                .unwrap();
+
+        parquet::schema::types::Type::group_type_builder("ContractConfig")
+            .with_fields(
+                [
+                    contract_id,
+                    code,
+                    salt,
+                    tx_id,
+                    output_index,
+                    tx_pointer_block_height,
+                    tx_pointer_tx_idx,
+                ]
+                .map(Arc::new)
+                .to_vec(),
+            )
+            .build()
+            .unwrap()
+    }
+
+    fn write<T: Write + Send>(self, writer: &mut SerializedFileWriter<T>) {
+        let mut group: parquet::file::writer::SerializedRowGroupWriter<'_, T> =
+            writer.next_row_group().unwrap();
+
+        let mut column = group.next_column().unwrap().unwrap();
+
+        let encoded = self.contract_id.to_vec().into();
+        column
+            .typed::<FixedLenByteArrayType>()
+            .write_batch(std::slice::from_ref(&encoded), None, None)
+            .unwrap();
+        column.close().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+
+        let encoded = ByteArray::from(self.code);
+        column
+            .typed::<ByteArrayType>()
+            .write_batch(std::slice::from_ref(&encoded), None, None)
+            .unwrap();
+
+        column.close().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+
+        let encoded = self.salt.to_vec().into();
+        column
+            .typed::<FixedLenByteArrayType>()
+            .write_batch(std::slice::from_ref(&encoded), None, None)
+            .unwrap();
+
+        column.close().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+
+        if let Some(encoded) = self.tx_id.map(|tx_id| tx_id.to_vec().into()) {
+            column
+                .typed::<FixedLenByteArrayType>()
+                .write_batch(std::slice::from_ref(&encoded), Some(&[1]), None)
+                .unwrap();
+        }
+        column.close().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+
+        if let Some(encoded) = self.output_index {
+            column
+                .typed::<Int32Type>()
+                .write_batch(std::slice::from_ref(&(encoded as i32)), Some(&[1]), None)
+                .unwrap();
+        }
+        column.close().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+
+        if let Some(encoded) = self.tx_pointer_block_height {
+            column
+                .typed::<Int32Type>()
+                .write_batch(std::slice::from_ref(&(*encoded as i32)), Some(&[1]), None)
+                .unwrap();
+        }
+        column.close().unwrap();
+        let mut column = group.next_column().unwrap().unwrap();
+
+        if let Some(encoded) = self.tx_pointer_tx_idx {
+            column
+                .typed::<Int32Type>()
+                .write_batch(std::slice::from_ref(&(encoded as i32)), Some(&[1]), None)
+                .unwrap();
+        }
+        column.close().unwrap();
+        group.close().unwrap();
+    }
 }
 
 #[serde_as]
@@ -298,3 +443,22 @@ impl_hex_number!(u8);
 impl_hex_number!(u16);
 impl_hex_number!(u32);
 impl_hex_number!(u64);
+
+#[cfg(test)]
+mod tests {
+    use parquet::file::writer::SerializedFileWriter;
+
+    use super::*;
+
+    #[test]
+    fn heyhay() {
+        let schema = Arc::new(ContractConfig::schema());
+        let mut buf = vec![];
+        let mut writer = SerializedFileWriter::new(&mut buf, schema, Default::default()).unwrap();
+        let cc = ContractConfig::random(&mut rand::thread_rng());
+        cc.write(&mut writer);
+        writer.close().unwrap();
+
+        eprintln!("{}", buf.len());
+    }
+}

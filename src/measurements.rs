@@ -53,7 +53,7 @@ impl LinearRegression for &[SeekMeasurement] {
             regress(|m| m.compressed.as_secs_f64()),
         ];
 
-        (start..end)
+        (start..=end)
             .step_by(step)
             .map(|num_elements| SeekMeasurement {
                 num_elements,
@@ -84,6 +84,13 @@ fn no_negatives(val: f64) -> f64 {
         0f64
     } else {
         val
+    }
+}
+impl LinearRegression for Vec<SeekMeasurement> {
+    type Measurement = SeekMeasurement;
+
+    fn linear_regression(&self, start: usize, step: usize, end: usize) -> Vec<Self::Measurement> {
+        self.as_slice().linear_regression(start, step, end)
     }
 }
 impl LinearRegression for Vec<EncodeMeasurement> {
@@ -259,6 +266,7 @@ impl<'a, T: IntoIterator<Item = &'a K>, K: ToCsv + 'a> CollectToCsv for T {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct SeekMeasurement {
     pub num_elements: usize,
     pub normal: Duration,

@@ -1,3 +1,4 @@
+pub mod api;
 pub mod encoding;
 pub mod measurements;
 pub mod serde_types;
