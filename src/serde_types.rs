@@ -1,14 +1,8 @@
 use core::fmt;
-use std::{convert::TryFrom, io::Write, sync::Arc};
+use std::convert::TryFrom;
 
 use fuel_core_types::{blockchain::primitives::DaBlockHeight, fuel_types::bytes::WORD_SIZE};
 use fuel_types::{Address, AssetId, BlockHeight, Bytes32, ContractId, Nonce, Salt, Word};
-use parquet::{
-    basic::Repetition,
-    data_type::{ByteArray, ByteArrayType, FixedLenByteArrayType, Int32Type},
-    file::writer::SerializedFileWriter,
-    schema::types::Type,
-};
 use rand::Rng;
 use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
 use serde_with::{serde_as, DeserializeAs, SerializeAs};
@@ -290,9 +284,6 @@ impl_hex_number!(u64);
 
 #[cfg(test)]
 mod tests {
-    use parquet::file::writer::SerializedFileWriter;
-
-    use super::*;
 
     #[test]
     fn heyhay() {

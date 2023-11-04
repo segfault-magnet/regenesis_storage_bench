@@ -6,7 +6,7 @@ pub mod util;
 
 use std::{iter::zip, path::Path};
 
-use encoding::{BincodeCodec, BsonCodec, JsonCodec, ParquetCodec};
+use encoding::{BincodeCodec, ParquetCodec};
 use itertools::Itertools;
 use measurements::{EncodeMeasurement, LinearRegression, MeasurementRunner};
 use plotters::{
@@ -219,7 +219,7 @@ impl PlotMerger {
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut measurement_runner = MeasurementRunner::new(100_000, 10_000);
+    let mut measurement_runner = MeasurementRunner::new(200_000, 10_000);
     let prediction_storage_scale = Scale::G;
     let prediction_x_scale = Scale::M;
 
@@ -227,72 +227,93 @@ fn main() -> anyhow::Result<()> {
     let prediction_step = prediction_max;
     let prediction_start = 0usize;
 
-    let normal_json = measurement_runner.run(&JsonCodec);
-    let normal_bson = measurement_runner.run(&BsonCodec);
+    let parquet_codec = ParquetCodec::new(50000, 0);
+    let parquet_codec_w_compression = ParquetCodec::new(50000, 1);
+
+    // let normal_json = measurement_runner.run(&JsonCodec);
+    // let normal_bson = measurement_runner.run(&BsonCodec);
     let normal_bincode = measurement_runner.run(&BincodeCodec);
-    let codec = ParquetCodec::new(10);
-    let normal_parquet = measurement_runner.run(&codec);
+    let normal_parquet = measurement_runner.run(&parquet_codec);
     let mut merger = PlotMerger::new(Scale::M, Scale::M);
-    merger.add(PlotSettings::normal("serde_json"), &normal_json);
+    // merger.add(PlotSettings::normal("serde_json"), &normal_json);
     merger.add(PlotSettings::normal("bincode"), &normal_bincode);
-    merger.add(PlotSettings::normal("bson"), &normal_bson);
+    // merger.add(PlotSettings::normal("bson"), &normal_bson);
+    merger.add(PlotSettings::normal("parquet"), &normal_parquet);
     merger.plot("normal")?;
 
-    let normal_json_predicted =
-        normal_json.linear_regression(prediction_start, prediction_step, prediction_max);
-    let normal_bson_predicted =
-        normal_bson.linear_regression(prediction_start, prediction_step, prediction_max);
+    // let normal_json_predicted =
+    //     normal_json.linear_regression(prediction_start, prediction_step, prediction_max);
+    // let normal_bson_predicted =
+    //     normal_bson.linear_regression(prediction_start, prediction_step, prediction_max);
     let normal_bincode_predicted =
         normal_bincode.linear_regression(prediction_start, prediction_step, prediction_max);
+    let normal_parquet_predicted =
+        normal_parquet.linear_regression(prediction_start, prediction_step, prediction_max);
     let mut merger = PlotMerger::new(prediction_storage_scale, prediction_x_scale);
+    // merger.add(
+    //     PlotSettings::predicted("serde_json"),
+    //     &normal_json_predicted,
+    // );
     merger.add(
-        PlotSettings::predicted("serde_json"),
-        &normal_json_predicted,
+        PlotSettings::predicted("parquet"),
+        &normal_parquet_predicted,
     );
-    merger.add(PlotSettings::predicted("bson"), &normal_bson_predicted);
+    // merger.add(PlotSettings::predicted("bson"), &normal_bson_predicted);
     merger.add(
         PlotSettings::predicted("bincode"),
         &normal_bincode_predicted,
     );
     merger.plot("normal_predicted")?;
 
-    let json_compressed = measurement_runner.run_compressed(&JsonCodec);
-    let bson_compressed = measurement_runner.run_compressed(&BsonCodec);
+    // let json_compressed = measurement_runner.run_compressed(&JsonCodec);
+    // let bson_compressed = measurement_runner.run_compressed(&BsonCodec);
     let bincode_compressed = measurement_runner.run_compressed(&BincodeCodec);
+    let parquet_compressed = measurement_runner.run(&parquet_codec_w_compression);
     let mut merger = PlotMerger::default();
-    merger.add(PlotSettings::normal("serde_json"), &json_compressed);
-    merger.add(PlotSettings::normal("bson"), &bson_compressed);
+    // merger.add(PlotSettings::normal("serde_json"), &json_compressed);
+    merger.add(PlotSettings::normal("parquet"), &parquet_compressed);
+    // merger.add(PlotSettings::normal("bson"), &bson_compressed);
     merger.add(PlotSettings::normal("bincode"), &bincode_compressed);
     merger.plot("compressed")?;
 
-    let json_compressed_predicted =
-        json_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
-    let bson_compressed_predicted =
-        bson_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
+    // let json_compressed_predicted =
+    //     json_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
+    // let bson_compressed_predicted =
+    //     bson_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
     let bincode_compressed_predicted =
         bincode_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
+    let parquet_compressed_predicted =
+        parquet_compressed.linear_regression(prediction_start, prediction_step, prediction_max);
     let mut merger = PlotMerger::new(prediction_storage_scale, prediction_x_scale);
-    merger.add(
-        PlotSettings::predicted("serde_json_compressed"),
-        &json_compressed_predicted,
-    );
-    merger.add(
-        PlotSettings::predicted("bson_compressed"),
-        &bson_compressed_predicted,
-    );
+    // merger.add(
+    //     PlotSettings::predicted("serde_json_compressed"),
+    //     &json_compressed_predicted,
+    // );
     merger.add(
         PlotSettings::predicted("bincode_compressed"),
         &bincode_compressed_predicted,
     );
     merger.add(
-        PlotSettings::predicted("serde_json"),
-        &normal_json_predicted,
-    );
-    merger.add(PlotSettings::predicted("bson"), &normal_bson_predicted);
-    merger.add(
         PlotSettings::predicted("bincode"),
         &normal_bincode_predicted,
     );
+    merger.add(
+        PlotSettings::predicted("parquet_compressed"),
+        &parquet_compressed_predicted,
+    );
+    merger.add(
+        PlotSettings::predicted("parquet"),
+        &normal_parquet_predicted,
+    );
+    // merger.add(
+    //     PlotSettings::predicted("bson_compressed"),
+    //     &bson_compressed_predicted,
+    // );
+    // merger.add(
+    //     PlotSettings::predicted("serde_json"),
+    //     &normal_json_predicted,
+    // );
+    // merger.add(PlotSettings::predicted("bson"), &normal_bson_predicted);
     merger.plot("compressed_predicted")?;
 
     Ok(())

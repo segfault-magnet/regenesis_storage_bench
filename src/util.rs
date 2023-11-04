@@ -3,7 +3,7 @@ use std::{
     iter::repeat_with,
 };
 
-use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use fuel_types::{AssetId, Bytes32};
 use rand::Rng;
 
@@ -68,13 +68,13 @@ impl Data<&mut Vec<u8>> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    pub fn wrap_in_buffered_decompressor(&self) -> Data<BufReader<ZlibDecoder<&[u8]>>> {
+    pub fn wrap_in_buffered_decompressor(&self) -> Data<BufReader<GzDecoder<&[u8]>>> {
         Data {
-            coins: BufReader::new(ZlibDecoder::new(self.coins.as_slice())),
-            messages: BufReader::new(ZlibDecoder::new(self.messages.as_slice())),
-            contracts: BufReader::new(ZlibDecoder::new(self.contracts.as_slice())),
-            contract_state: BufReader::new(ZlibDecoder::new(self.contract_state.as_slice())),
-            contract_balance: BufReader::new(ZlibDecoder::new(self.contract_balance.as_slice())),
+            coins: BufReader::new(GzDecoder::new(self.coins.as_slice())),
+            messages: BufReader::new(GzDecoder::new(self.messages.as_slice())),
+            contracts: BufReader::new(GzDecoder::new(self.contracts.as_slice())),
+            contract_state: BufReader::new(GzDecoder::new(self.contract_state.as_slice())),
+            contract_balance: BufReader::new(GzDecoder::new(self.contract_balance.as_slice())),
         }
     }
 }
@@ -114,13 +114,13 @@ impl Data<Vec<u8>> {
         }
     }
 
-    pub fn wrap_in_compressor(&mut self, level: Compression) -> Data<ZlibEncoder<&mut Vec<u8>>> {
+    pub fn wrap_in_compressor(&mut self, level: Compression) -> Data<GzEncoder<&mut Vec<u8>>> {
         Data {
-            coins: ZlibEncoder::new(&mut self.coins, level),
-            messages: ZlibEncoder::new(&mut self.messages, level),
-            contracts: ZlibEncoder::new(&mut self.contracts, level),
-            contract_state: ZlibEncoder::new(&mut self.contract_state, level),
-            contract_balance: ZlibEncoder::new(&mut self.contract_balance, level),
+            coins: GzEncoder::new(&mut self.coins, level),
+            messages: GzEncoder::new(&mut self.messages, level),
+            contracts: GzEncoder::new(&mut self.contracts, level),
+            contract_state: GzEncoder::new(&mut self.contract_state, level),
+            contract_balance: GzEncoder::new(&mut self.contract_balance, level),
         }
     }
 
@@ -135,7 +135,7 @@ impl Data<Vec<u8>> {
     }
 }
 
-impl<'a> Data<ZlibEncoder<&'a mut Vec<u8>>> {
+impl<'a> Data<GzEncoder<&'a mut Vec<u8>>> {
     pub fn finish(self) -> std::io::Result<Data<&'a mut Vec<u8>>> {
         Ok(Data {
             coins: self.coins.finish()?,
@@ -149,8 +149,8 @@ impl<'a> Data<ZlibEncoder<&'a mut Vec<u8>>> {
 impl Data<&mut Vec<u8>> {}
 
 pub fn payload(repeat: usize) -> Payload {
-    let mut rng = rand::rngs::mock::StepRng::new(0, 1);
-    // let mut rng = rand::thread_rng();
+    // let mut rng = rand::rngs::mock::StepRng::new(0, 1);
+    let mut rng = rand::thread_rng();
 
     let coins = {
         let mut rng = rng.clone();

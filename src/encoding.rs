@@ -1,19 +1,20 @@
+use std::{io::Cursor, sync::Arc};
+
+use bincode::config::{Configuration, LittleEndian, NoLimit, Varint};
 use bytes::Bytes;
 use fuel_core_types::blockchain::primitives::DaBlockHeight;
 use fuel_types::{Address, AssetId, BlockHeight, Bytes32, ContractId, Nonce, Salt};
 use itertools::Itertools;
 use parquet::{
-    basic::Repetition,
+    basic::{Compression, GzipLevel, Repetition},
     data_type::{ByteArrayType, FixedLenByteArrayType, Int32Type, Int64Type},
     file::{
-        reader::FileReader, serialized_reader::SerializedFileReader, writer::SerializedFileWriter,
+        properties::WriterProperties, reader::FileReader, serialized_reader::SerializedFileReader,
+        writer::SerializedFileWriter,
     },
     record::Field,
     schema::types::Type,
 };
-use std::{io::Cursor, sync::Arc};
-
-use bincode::config::{Configuration, LittleEndian, NoLimit, Varint};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
@@ -146,19 +147,21 @@ trait ParquetSchema {
 
 pub struct ParquetCodec {
     pub batch_size: usize,
+    pub compression_level: u32,
 }
 
 impl ParquetCodec {
-    pub fn new(batch_size: usize) -> Self {
-        Self { batch_size }
+    pub fn new(batch_size: usize, compression_level: u32) -> Self {
+        Self {
+            batch_size,
+            compression_level,
+        }
     }
 }
 
 impl<W: std::io::Write + Send> Encode<CoinConfig, W> for ParquetCodec {
     fn encode_subset(&self, data: Vec<CoinConfig>, writer: &mut W) {
-        let mut writer =
-            SerializedFileWriter::new(writer, Arc::new(CoinConfig::schema()), Default::default())
-                .unwrap();
+        let mut writer = get_writer::<CoinConfig, _>(writer, self.compression_level);
         for chunk in data.into_iter().chunks(self.batch_size).into_iter() {
             let mut group = writer.next_row_group().unwrap();
             let chunk = chunk.collect_vec();
@@ -347,12 +350,7 @@ impl Decode<CoinConfig, Cursor<Vec<u8>>> for ParquetCodec {
 }
 impl<W: std::io::Write + Send> Encode<MessageConfig, W> for ParquetCodec {
     fn encode_subset(&self, data: Vec<MessageConfig>, writer: &mut W) {
-        let mut writer = SerializedFileWriter::new(
-            writer,
-            Arc::new(MessageConfig::schema()),
-            Default::default(),
-        )
-        .unwrap();
+        let mut writer = get_writer::<MessageConfig, _>(writer, self.compression_level);
         for chunk in data.into_iter().chunks(self.batch_size).into_iter() {
             let mut group = writer.next_row_group().unwrap();
             let chunk = chunk.collect_vec();
@@ -468,14 +466,21 @@ impl Decode<MessageConfig, Cursor<Vec<u8>>> for ParquetCodec {
     }
 }
 
+fn get_writer<T: ParquetSchema, W: std::io::Write + Send>(
+    writer: W,
+    compression_level: u32,
+) -> SerializedFileWriter<W> {
+    let writer_properties = WriterProperties::builder()
+        .set_compression(Compression::GZIP(
+            GzipLevel::try_new(compression_level).unwrap(),
+        ))
+        .build();
+    SerializedFileWriter::new(writer, Arc::new(T::schema()), Arc::new(writer_properties)).unwrap()
+}
+
 impl<W: std::io::Write + Send> Encode<ContractState, W> for ParquetCodec {
     fn encode_subset(&self, data: Vec<ContractState>, writer: &mut W) {
-        let mut writer = SerializedFileWriter::new(
-            writer,
-            Arc::new(ContractState::schema()),
-            Default::default(),
-        )
-        .unwrap();
+        let mut writer = get_writer::<ContractState, _>(writer, self.compression_level);
         for chunk in data.into_iter().chunks(self.batch_size).into_iter() {
             let mut group = writer.next_row_group().unwrap();
             let chunk = chunk.collect_vec();
@@ -526,12 +531,7 @@ impl Decode<ContractState, Cursor<Vec<u8>>> for ParquetCodec {
 }
 impl<W: std::io::Write + Send> Encode<ContractBalance, W> for ParquetCodec {
     fn encode_subset(&self, data: Vec<ContractBalance>, writer: &mut W) {
-        let mut writer = SerializedFileWriter::new(
-            writer,
-            Arc::new(ContractBalance::schema()),
-            Default::default(),
-        )
-        .unwrap();
+        let mut writer = get_writer::<ContractBalance, _>(writer, self.compression_level);
         for chunk in data.into_iter().chunks(self.batch_size).into_iter() {
             let mut group = writer.next_row_group().unwrap();
             let chunk = chunk.collect_vec();
@@ -587,12 +587,7 @@ impl Decode<ContractBalance, Cursor<Vec<u8>>> for ParquetCodec {
 
 impl<W: std::io::Write + Send> Encode<ContractConfig, W> for ParquetCodec {
     fn encode_subset(&self, data: Vec<ContractConfig>, writer: &mut W) {
-        let mut writer = SerializedFileWriter::new(
-            writer,
-            Arc::new(ContractConfig::schema()),
-            Default::default(),
-        )
-        .unwrap();
+        let mut writer = get_writer::<ContractConfig, _>(writer, self.compression_level);
         for chunk in data.into_iter().chunks(self.batch_size).into_iter() {
             let mut group = writer.next_row_group().unwrap();
             let chunk = chunk.collect_vec();
@@ -979,7 +974,10 @@ mod tests {
 
     #[test]
     fn mememe() {
-        let codec = ParquetCodec { batch_size: 10 };
+        let codec = ParquetCodec {
+            batch_size: 10,
+            compression_level: 0,
+        };
         let mut buffer = vec![];
         let cc = ContractConfig::random(&mut rand::thread_rng());
         eprintln!("{cc:?}");

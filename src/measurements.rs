@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
 use itertools::Itertools;
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
 
@@ -164,7 +164,7 @@ pub fn measure_normal<C: PayloadCodec<Cursor<Vec<u8>>, Vec<u8>>>(
 }
 
 pub fn measure_compressed<
-    C: for<'a> PayloadCodec<BufReader<ZlibDecoder<&'a [u8]>>, ZlibEncoder<&'a mut Vec<u8>>>,
+    C: for<'a> PayloadCodec<BufReader<GzDecoder<&'a [u8]>>, GzEncoder<&'a mut Vec<u8>>>,
 >(
     codec: &C,
     data: &mut Data<Vec<u8>>,
@@ -254,7 +254,7 @@ fn track_time<T>(action: impl FnOnce() -> T) -> (Duration, T) {
 //
 // fn generate_json_compressed(payload: impl Iterator<Item = StateEntry>, path: impl AsRef<Path>) {
 //     let file = File::create(path.as_ref()).unwrap();
-//     let mut compressor = ZlibEncoder::new(file, Compression::default());
+//     let mut compressor = GzEncoder::new(file, Compression::default());
 //     encode_json_payload(payload, &mut compressor);
 //     compressor.finish().unwrap();
 // }
@@ -281,7 +281,7 @@ fn track_time<T>(action: impl FnOnce() -> T) -> (Duration, T) {
 //
 //     let start = Instant::now();
 //     let file = File::open(tmp.path()).unwrap();
-//     let mut decoder = ZlibDecoder::new(file);
+//     let mut decoder = GzDecoder::new(file);
 //
 //     std::io::copy(
 //         &mut std::io::Read::by_ref(&mut decoder),
@@ -310,7 +310,7 @@ impl MeasurementRunner {
     }
 
     pub fn run_compressed<
-        C: for<'a> PayloadCodec<BufReader<ZlibDecoder<&'a [u8]>>, ZlibEncoder<&'a mut Vec<u8>>>,
+        C: for<'a> PayloadCodec<BufReader<GzDecoder<&'a [u8]>>, GzEncoder<&'a mut Vec<u8>>>,
     >(
         &mut self,
         codec: &C,
