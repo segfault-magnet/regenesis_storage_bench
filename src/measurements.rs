@@ -1,7 +1,5 @@
 use std::{
-    fs::File,
-    io::{BufReader, BufWriter, Seek, Write},
-    path::Path,
+    io::{BufReader, Cursor, Write},
     time::{Duration, Instant},
 };
 
@@ -10,11 +8,8 @@ use itertools::Itertools;
 use linregress::{FormulaRegressionBuilder, RegressionDataBuilder};
 
 use crate::{
-    encoding::{
-        decode_bincode, decode_bson, decode_json, encode_bincode, encode_bson, encode_json,
-    },
-    serde_types::StateEntry,
-    util::payload,
+    encoding::PayloadCodec,
+    util::{payload, Data, Payload},
 };
 
 pub struct EncodeMeasurement {
@@ -151,15 +146,15 @@ impl ToCsv for EncodeMeasurement {
     }
 }
 
-pub fn measure_json_normal(
-    mut buffer: &mut Vec<u8>,
-    entries: Vec<StateEntry>,
+pub fn measure_normal<C: PayloadCodec<Cursor<Vec<u8>>, Vec<u8>>>(
+    codec: &C,
+    mut data: Data<Vec<u8>>,
+    entries: Payload,
 ) -> EncodeMeasurement {
-    let num_elements = entries.len();
-    buffer.clear();
-    let encode_time = track_time(|| encode_json(entries, &mut buffer));
-    let bytes = buffer.len();
-    let decode_time = decode_normal(buffer, |buf| decode_json(buf));
+    let num_elements = entries.num_entries();
+    let encode_time = track_time(|| codec.encode(entries, &mut data)).0;
+    let bytes = data.len();
+    let decode_time = track_time(|| codec.decode(data.wrap_in_cursor())).0;
     EncodeMeasurement {
         bytes,
         encode_time,
@@ -168,85 +163,25 @@ pub fn measure_json_normal(
     }
 }
 
-pub fn measure_bson_normal(
-    mut buffer: &mut Vec<u8>,
-    entries: Vec<StateEntry>,
+pub fn measure_compressed<
+    C: for<'a> PayloadCodec<BufReader<ZlibDecoder<&'a [u8]>>, ZlibEncoder<&'a mut Vec<u8>>>,
+>(
+    codec: &C,
+    data: &mut Data<Vec<u8>>,
+    entries: Payload,
 ) -> EncodeMeasurement {
-    let num_elements = entries.len();
-    buffer.clear();
-    let encode_time = track_time(|| encode_bson(entries, &mut buffer));
-    let bytes = buffer.len();
-    let decode_time = decode_normal(buffer, |buf| decode_bson(buf));
-    EncodeMeasurement {
-        bytes,
-        encode_time,
-        decode_time,
-        num_elements,
-    }
-}
-
-pub fn measure_bincode_normal(
-    mut buffer: &mut Vec<u8>,
-    entries: Vec<StateEntry>,
-) -> EncodeMeasurement {
-    let num_elements = entries.len();
-    buffer.clear();
-    let encode_time = track_time(|| encode_bincode(entries, &mut buffer));
-    let bytes = buffer.len();
-    let decode_time = decode_normal(buffer, |buf| decode_bincode(buf));
-    EncodeMeasurement {
-        bytes,
-        encode_time,
-        decode_time,
-        num_elements,
-    }
-}
-
-pub fn measure_json_compressed(
-    buffer: &mut Vec<u8>,
-    entries: Vec<StateEntry>,
-) -> EncodeMeasurement {
-    let num_elements = entries.len();
-    buffer.clear();
-    let encode_time = encode_compressed(buffer, |compressor| encode_json(entries, compressor));
-    let bytes = buffer.len();
-    let decode_time = decode_compressed(buffer, |reader| decode_json(reader));
-
-    EncodeMeasurement {
-        bytes,
-        encode_time,
-        decode_time,
-        num_elements,
-    }
-}
-
-pub fn measure_bson_compressed(
-    buffer: &mut Vec<u8>,
-    entries: Vec<StateEntry>,
-) -> EncodeMeasurement {
-    let num_elements = entries.len();
-    buffer.clear();
-    let encode_time = encode_compressed(buffer, |compressor| encode_bson(entries, compressor));
-    let bytes = buffer.len();
-    let decode_time = decode_compressed(buffer, |reader| decode_bson(reader));
-
-    EncodeMeasurement {
-        bytes,
-        encode_time,
-        decode_time,
-        num_elements,
-    }
-}
-
-pub fn measure_bincode_compressed(
-    buffer: &mut Vec<u8>,
-    entries: Vec<StateEntry>,
-) -> EncodeMeasurement {
-    let num_elements = entries.len();
-    buffer.clear();
-    let encode_time = encode_compressed(buffer, |compressor| encode_bincode(entries, compressor));
-    let bytes = buffer.len();
-    let decode_time = decode_compressed(buffer, |reader| decode_bincode(reader));
+    let num_elements = entries.num_entries();
+    data.clear();
+    let (encode_time, data) = track_time(|| {
+        let mut data = data.wrap_in_compressor(Compression::new(1));
+        codec.encode(entries, &mut data);
+        data.finish().unwrap()
+    });
+    let bytes = data.len();
+    let (decode_time, _) = track_time(|| {
+        let data = data.wrap_in_buffered_decompressor();
+        codec.decode(data);
+    });
 
     EncodeMeasurement {
         bytes,
@@ -294,113 +229,112 @@ impl ToCsv for SeekMeasurement {
     }
 }
 
-pub fn measure_json_seek(entries: Vec<StateEntry>) -> SeekMeasurement {
-    let num_elements = entries.len();
-    let normal = seek_end_uncompressed(entries.clone());
-    let compressed = seek_end_compressed(entries);
-    SeekMeasurement {
-        num_elements,
-        normal,
-        compressed,
-    }
-}
+// pub fn measure_json_seek(entries: Vec<StateEntry>) -> SeekMeasurement {
+//     let num_elements = entries.len();
+//     let normal = seek_end_uncompressed(entries.clone());
+//     let compressed = seek_end_compressed(entries);
+//     SeekMeasurement {
+//         num_elements,
+//         normal,
+//         compressed,
+//     }
+// }
 
-fn track_time(action: impl FnOnce()) -> Duration {
+fn track_time<T>(action: impl FnOnce() -> T) -> (Duration, T) {
     let start = Instant::now();
-    action();
-    Instant::now() - start
+    let ret = action();
+    (Instant::now() - start, ret)
 }
 
-fn decode_normal(payload: &[u8], decoder: fn(&mut BufReader<&[u8]>)) -> Duration {
-    let mut reader = BufReader::new(payload);
-
-    track_time(move || decoder(&mut reader))
-}
-
-fn decode_compressed(data: &[u8], decoder: fn(&mut BufReader<ZlibDecoder<&[u8]>>)) -> Duration {
-    let mut reader = BufReader::new(ZlibDecoder::new(data));
-
-    track_time(move || decoder(&mut reader))
-}
-
-fn encode_compressed(
-    buf: &mut Vec<u8>,
-    encoder: impl FnOnce(&mut ZlibEncoder<&mut Vec<u8>>),
-) -> Duration {
-    let mut compressor = ZlibEncoder::new(buf, Compression::new(1));
-    track_time(move || {
-        encoder(&mut compressor);
-        compressor.finish().unwrap();
-    })
-}
-
-fn generate_json_uncompressed(payload: impl Iterator<Item = StateEntry>, path: impl AsRef<Path>) {
-    let file = File::create(path.as_ref()).unwrap();
-    let mut writer = BufWriter::new(file);
-    encode_json(payload, &mut writer);
-}
-
-fn generate_json_compressed(payload: impl Iterator<Item = StateEntry>, path: impl AsRef<Path>) {
-    let file = File::create(path.as_ref()).unwrap();
-    let mut compressor = ZlibEncoder::new(file, Compression::default());
-    encode_json(payload, &mut compressor);
-    compressor.finish().unwrap();
-}
-
-fn seek_end_uncompressed(payload: impl IntoIterator<Item = StateEntry>) -> std::time::Duration {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    generate_json_uncompressed(payload.into_iter(), tmp.path());
-    tmp.as_file().sync_data().unwrap();
-
-    let start = Instant::now();
-    let mut file = File::open(tmp.path()).unwrap();
-    file.seek(std::io::SeekFrom::End(0)).unwrap();
-
-    let duration = Instant::now() - start;
-
-    tmp.close().unwrap();
-    duration
-}
-
-fn seek_end_compressed(payload: impl IntoIterator<Item = StateEntry>) -> std::time::Duration {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    generate_json_compressed(payload.into_iter(), tmp.path());
-    tmp.as_file().sync_data().unwrap();
-
-    let start = Instant::now();
-    let file = File::open(tmp.path()).unwrap();
-    let mut decoder = ZlibDecoder::new(file);
-
-    std::io::copy(
-        &mut std::io::Read::by_ref(&mut decoder),
-        &mut std::io::sink(),
-    )
-    .unwrap();
-
-    let duration = Instant::now() - start;
-    tmp.close().unwrap();
-    duration
-}
-
+// fn generate_json_uncompressed(payload: impl Iterator<Item = StateEntry>, path: impl AsRef<Path>) {
+//     let file = File::create(path.as_ref()).unwrap();
+//     let mut writer = BufWriter::new(file);
+//     encode_json_payload(payload, &mut writer);
+// }
+//
+// fn generate_json_compressed(payload: impl Iterator<Item = StateEntry>, path: impl AsRef<Path>) {
+//     let file = File::create(path.as_ref()).unwrap();
+//     let mut compressor = ZlibEncoder::new(file, Compression::default());
+//     encode_json_payload(payload, &mut compressor);
+//     compressor.finish().unwrap();
+// }
+//
+// fn seek_end_uncompressed(payload: impl IntoIterator<Item = StateEntry>) -> std::time::Duration {
+//     let tmp = tempfile::NamedTempFile::new().unwrap();
+//     generate_json_uncompressed(payload.into_iter(), tmp.path());
+//     tmp.as_file().sync_data().unwrap();
+//
+//     let start = Instant::now();
+//     let mut file = File::open(tmp.path()).unwrap();
+//     file.seek(std::io::SeekFrom::End(0)).unwrap();
+//
+//     let duration = Instant::now() - start;
+//
+//     tmp.close().unwrap();
+//     duration
+// }
+//
+// fn seek_end_compressed(payload: impl IntoIterator<Item = StateEntry>) -> std::time::Duration {
+//     let tmp = tempfile::NamedTempFile::new().unwrap();
+//     generate_json_compressed(payload.into_iter(), tmp.path());
+//     tmp.as_file().sync_data().unwrap();
+//
+//     let start = Instant::now();
+//     let file = File::open(tmp.path()).unwrap();
+//     let mut decoder = ZlibDecoder::new(file);
+//
+//     std::io::copy(
+//         &mut std::io::Read::by_ref(&mut decoder),
+//         &mut std::io::sink(),
+//     )
+//     .unwrap();
+//
+//     let duration = Instant::now() - start;
+//     tmp.close().unwrap();
+//     duration
+// }
+//
 pub struct MeasurementRunner {
     step: usize,
     max: usize,
-    buffer: Vec<u8>,
+    data: Data<Vec<u8>>,
 }
 
 impl MeasurementRunner {
     pub fn new(max: usize, step: usize) -> Self {
-        let buffer = Vec::with_capacity(5_000_000_000);
-        Self { buffer, step, max }
+        Self {
+            data: Data::with_capacity(5_000_000_000),
+            step,
+            max,
+        }
     }
 
-    pub fn run<T>(&mut self, action: fn(&mut Vec<u8>, Vec<StateEntry>) -> T) -> Vec<T> {
+    pub fn run_compressed<
+        C: for<'a> PayloadCodec<BufReader<ZlibDecoder<&'a [u8]>>, ZlibEncoder<&'a mut Vec<u8>>>,
+    >(
+        &mut self,
+        codec: &C,
+    ) -> Vec<EncodeMeasurement> {
         (0..self.max)
             .step_by(self.step)
             .map(payload)
             .map(|entries| {
-                self.buffer.clear();
-                action(&mut self.buffer, entries)
+                self.data.clear();
+                measure_compressed(codec, &mut self.data, entries)
+            })
+            .collect()
+    }
+
+    pub fn run<C: PayloadCodec<Cursor<Vec<u8>>, Vec<u8>>>(
+        &mut self,
+        codec: &C,
+    ) -> Vec<EncodeMeasurement> {
+        (0..self.max)
+            .step_by(self.step)
+            .map(payload)
+            .map(|entries| {
+                let data = Data::with_capacity(5_000_000_000);
+                measure_normal(codec, data, entries)
             })
             .collect()
     }

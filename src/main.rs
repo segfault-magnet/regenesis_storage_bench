@@ -1,4 +1,4 @@
-pub mod api;
+// pub mod api;
 pub mod encoding;
 pub mod measurements;
 pub mod serde_types;
@@ -6,12 +6,9 @@ pub mod util;
 
 use std::{iter::zip, path::Path};
 
+use encoding::{BincodeCodec, BsonCodec, JsonCodec, ParquetCodec};
 use itertools::Itertools;
-use measurements::{
-    measure_bincode_compressed, measure_bincode_normal, measure_bson_compressed,
-    measure_bson_normal, measure_json_compressed, measure_json_normal, measure_json_seek,
-    EncodeMeasurement, LinearRegression, MeasurementRunner,
-};
+use measurements::{EncodeMeasurement, LinearRegression, MeasurementRunner};
 use plotters::{
     prelude::{ChartBuilder, Circle, IntoDrawingArea, PathElement, SVGBackend},
     series::{LineSeries, PointSeries},
@@ -124,6 +121,7 @@ fn draw_measurements(
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(dead_code)]
 enum Scale {
     #[default]
     M,
@@ -229,9 +227,11 @@ fn main() -> anyhow::Result<()> {
     let prediction_step = prediction_max;
     let prediction_start = 0usize;
 
-    let normal_json = measurement_runner.run(measure_json_normal);
-    let normal_bson = measurement_runner.run(measure_bson_normal);
-    let normal_bincode = measurement_runner.run(measure_bincode_normal);
+    let normal_json = measurement_runner.run(&JsonCodec);
+    let normal_bson = measurement_runner.run(&BsonCodec);
+    let normal_bincode = measurement_runner.run(&BincodeCodec);
+    let codec = ParquetCodec::new(10);
+    let normal_parquet = measurement_runner.run(&codec);
     let mut merger = PlotMerger::new(Scale::M, Scale::M);
     merger.add(PlotSettings::normal("serde_json"), &normal_json);
     merger.add(PlotSettings::normal("bincode"), &normal_bincode);
@@ -256,9 +256,9 @@ fn main() -> anyhow::Result<()> {
     );
     merger.plot("normal_predicted")?;
 
-    let json_compressed = measurement_runner.run(measure_json_compressed);
-    let bson_compressed = measurement_runner.run(measure_bson_compressed);
-    let bincode_compressed = measurement_runner.run(measure_bincode_compressed);
+    let json_compressed = measurement_runner.run_compressed(&JsonCodec);
+    let bson_compressed = measurement_runner.run_compressed(&BsonCodec);
+    let bincode_compressed = measurement_runner.run_compressed(&BincodeCodec);
     let mut merger = PlotMerger::default();
     merger.add(PlotSettings::normal("serde_json"), &json_compressed);
     merger.add(PlotSettings::normal("bson"), &bson_compressed);
