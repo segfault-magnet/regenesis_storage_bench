@@ -326,7 +326,7 @@ impl MeasurementRunner {
     }
 
     pub fn run<C: PayloadCodec<Cursor<Vec<u8>>, Vec<u8>>>(
-        &mut self,
+        &self,
         codec: &C,
     ) -> Vec<EncodeMeasurement> {
         (0..self.max)
